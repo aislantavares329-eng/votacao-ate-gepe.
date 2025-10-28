@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from pathlib import Path
-from urllib.parse import urlencode, quote_plus
 
 # =========================
 # CONFIG
@@ -10,17 +9,12 @@ st.set_page_config(page_title="Votação Mascote A.T.E. (GEPE)", layout="centere
 
 OPCOES = ["Pomba", "Coruja", "Gato"]
 
-# Imagens locais (coloque arquivos pomba.png, coruja.png, gato.png no repositório)
-IMGS = {
-    "Pomba": "pomba.png",
-    "Coruja": "coruja.png",
-    "Gato": "gato.png",
-}
+# Se quiser imagens, suba pomba.png / coruja.png / gato.png no repo
+IMGS = {"Pomba": "pomba.png", "Coruja": "coruja.png", "Gato": "gato.png"}
 
-# Arquivos “persistentes” no container do Streamlit Cloud (válido para a sessão)
 BASE = Path(".")
 CSV = BASE / "votos.csv"
-LOCK = BASE / "winner.txt"
+LOCK = BASE / "winner.txt"  # quando existe, votação está encerrada e guarda o vencedor
 
 # =========================
 # HELPERS
@@ -43,13 +37,14 @@ def contagem():
 
 def vencedor_atual():
     c = contagem()
-    # empate: pega o primeiro por ordem (comunica empate no título)
-    v = max(c, key=c.get) if c else None
+    if not c or sum(c.values()) == 0:
+        return None, {o: 0 for o in OPCOES}
+    v = max(c, key=c.get)  # em empate, pega o primeiro por ordem
     return v, c
 
 def fechar_votacao():
     v, c = vencedor_atual()
-    if not v or sum(c.values()) == 0:
+    if sum(c.values()) == 0:
         return False, "Sem votos."
     LOCK.write_text(v, encoding="utf-8")
     return True, v
@@ -67,95 +62,96 @@ def vencedor_travado():
 def css_limpo():
     st.markdown("""
     <style>
-      header, footer, .stDeployButton, .viewerBadge_link__1S137 {display:none !important;}
-      .block-container {padding-top: 1.2rem; padding-bottom: 0.2rem;}
+      header, footer, .viewerBadge_link__1S137 {display:none !important;}
+      .block-container {padding-top: 1.2rem; padding-bottom: 0.6rem;}
       .stButton>button {font-size: 1.05rem;}
     </style>
     """, unsafe_allow_html=True)
 
-def url_atual(params: dict):
-    base = st.secrets.get("BASE_URL", "")  # opcional; senão usa a URL atual
-    if not base:
-        base = st.experimental_get_query_params()
-        # sem BASE_URL em secrets, vamos só construir query; o usuário usará a URL atual + ?view=winner
-    return "?" + urlencode(params, quote_via=quote_plus)
+def link_relativo(view_name: str) -> str:
+    # A URL base do Streamlit permanece; só trocamos a query.
+    return f"?view={view_name}"
 
 # =========================
-# ROTAS POR QUERY PARAM
+# APP
 # =========================
-qs = st.experimental_get_query_params()
-view = (qs.get("view", ["vote"])[0]).lower()
-
 init_csv()
 css_limpo()
 
+qs = st.experimental_get_query_params()
+view = (qs.get("view", ["vote"])[0]).lower()
+
 # -------------------------
-# VIEW: VOTAÇÃO (QR + rádio)
+# TELA: VOTAÇÃO
 # -------------------------
 if view == "vote":
     st.title("Vote no Mascote do A.T.E. 🕊️🦉🐈")
+
     if votacao_fechada():
         st.info(f"Votação encerrada. Vencedor: **{vencedor_travado()}**")
     else:
-        escolha = st.radio("Escolha 1 opção:", OPCOES, index=None, horizontal=False)
-        st.button("Enviar voto", disabled=(escolha is None), on_click=lambda: votar(escolha))
-        st.caption("Depois de votar, você pode voltar e ver o resultado parcial.")
+        escolha = st.radio("Escolha 1 opção:", OPCOES, index=None)
+        if st.button("Enviar voto", disabled=(escolha is None), use_container_width=True):
+            votar(escolha)
+            st.success(f"Voto confirmado: {escolha}")
+
     st.divider()
-    v, c = vencedor_atual()
     st.subheader("Resultado parcial (ao vivo)")
+    _, c = vencedor_atual()
     st.bar_chart(pd.DataFrame({"Votos": c}))
 
     st.divider()
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.page_link(st.experimental_get_query_params(), label="Atualizar", icon="🔄")
+        if st.button("🔄 Atualizar", use_container_width=True):
+            st.rerun()
     with col2:
-        st.link_button("Abrir tela de RESULTADO", url_atual({"view":"winner"}), use_container_width=True)
+        st.link_button("Abrir RESULTADO (para o PPT)", link_relativo("winner"), use_container_width=True)
     with col3:
-        st.link_button("Tela de CONTROLE", url_atual({"view":"control"}), use_container_width=True)
+        st.link_button("Tela de CONTROLE", link_relativo("control"), use_container_width=True)
 
 # -------------------------
-# VIEW: RESULTADO LIMPO (para embutir no PowerPoint)
+# TELA: RESULTADO LIMPO (para embutir no PowerPoint)
 # -------------------------
 elif view == "winner":
-    # Tela limpa: só o vencedor (imagem grande). Sem header/footer.
     st.markdown("<h1 style='text-align:center;'>Mascote do A.T.E.</h1>", unsafe_allow_html=True)
+
     if not votacao_fechada():
         v, c = vencedor_atual()
-        st.warning("Votação em andamento. Feche a votação para fixar o vencedor.")
         if sum(c.values()) == 0:
             st.info("Aguardando votos…")
         else:
-            st.write(f"Parcial: **{v}** à frente.")
+            st.warning("Votação em andamento. Feche para fixar o vencedor.")
+            st.write(f"<h3 style='text-align:center;'>Parcial: {v}</h3>", unsafe_allow_html=True)
     else:
         v = vencedor_travado()
         if v:
-            st.write(f"<h3 style='text-align:center;'>Vencedor: {v}</h3>", unsafe_allow_html=True)
+            st.write(f"<h2 style='text-align:center;'>Vencedor: {v}</h2>", unsafe_allow_html=True)
             img_path = IMGS.get(v)
             if img_path and Path(img_path).exists():
                 st.image(img_path, use_column_width=True)
             else:
-                # fallback com emoji grande
-                EMOJI = {"Pomba":"🕊️","Coruja":"🦉","Gato":"🐈"}.get(v,"⭐")
+                EMOJI = {"Pomba":"🕊️","Coruja":"🦉","Gato":"🐈"}.get(v, "⭐")
                 st.markdown(f"<div style='font-size:200px;text-align:center;'>{EMOJI}</div>", unsafe_allow_html=True)
         else:
-            st.info("Sem vencedor (winner.txt vazio).")
+            st.info("Sem vencedor definido.")
+
+    st.divider()
+    st.link_button("Ir para CONTROLE", link_relativo("control"), use_container_width=True)
 
 # -------------------------
-# VIEW: CONTROLE (encerrar/reabrir)
+# TELA: CONTROLE (encerrar/reabrir)
 # -------------------------
 elif view == "control":
     st.header("Controle do Apresentador")
     v, c = vencedor_atual()
     st.write("Parcial:", c)
+
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("Fechar votação (travar vencedor)", use_container_width=True):
             ok, msg = fechar_votacao()
-            if ok:
-                st.success(f"Votação encerrada. Vencedor: {msg}")
-            else:
-                st.error(msg)
+            st.success(f"Votação encerrada. Vencedor: {msg}" if ok else msg)
     with col2:
         if st.button("Reabrir votação", use_container_width=True):
             reabrir()
@@ -165,8 +161,10 @@ elif view == "control":
             pd.DataFrame(columns=["escolha"]).to_csv(CSV, index=False)
             reabrir()
             st.warning("Votos zerados e vencedor limpo.")
+
     st.divider()
-    st.link_button("Tela de Votação (QR)", url_atual({"view":"vote"}), use_container_width=True)
-    st.link_button("Tela de Resultado (limpa para PPT)", url_atual({"view":"winner"}), use_container_width=True)
+    st.link_button("Tela de VOTAÇÃO (QR)", link_relativo("vote"), use_container_width=True)
+    st.link_button("Tela de RESULTADO (PPT)", link_relativo("winner"), use_container_width=True)
+
 else:
     st.write("View inválida. Use ?view=vote | ?view=winner | ?view=control")
